@@ -19,7 +19,7 @@ export default function Login({ onLogin }) {
 
     // Send initData to backend
     axios
-      .post(`${API_BASE}/api/auth/login`, { initData })
+      .post(`${API_BASE}/api/auth`, { initData })
       .then((res) => {
         onLogin(res.data.user); // Pass user data to App
         setLoading(false);
