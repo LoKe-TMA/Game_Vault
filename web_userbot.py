@@ -5,7 +5,6 @@ import uvicorn
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
-# MessageHandler ကို import လုပ်ရန်
 from pyrogram.handlers import MessageHandler 
 from google import genai
 from fastapi import FastAPI
@@ -21,15 +20,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ၁။ CONFIGURATION & ENVIRONMENT VARIABLES
 # ===============================================
 
-# Environment Variables မှ တန်ဖိုးများ ရယူပါ (Render တွင် ၎င်းတို့၏ Environment Variables ကို သုံးမည်)
 API_ID = int(os.environ.get("API_ID", 0)) 
 API_HASH = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "") 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") 
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
-# .env မှရသော string ကို list အဖြစ် ပြန်ပြောင်းသည်
-COMMAND_PREFIX = os.environ.get("COMMAND_PREFIX_LIST", ".ai").split() 
 
 # ===============================================
 # ၂။ GLOBAL OBJECTS & INITIALIZATION
@@ -37,38 +33,44 @@ COMMAND_PREFIX = os.environ.get("COMMAND_PREFIX_LIST", ".ai").split()
 
 app_pyrogram = None 
 gemini_client = None 
-app_fastapi = FastAPI(title="Gemini UserBot Web Worker") 
+app_fastapi = FastAPI(title="Gemini Freedom UserBot") 
 
 # -----------------------------------------------
 # Pyrogram Handler Function
 # -----------------------------------------------
 
-# Decorator မပါဝင်ပါ၊ ဤ function ကို initialize_clients() ထဲတွင် မှတ်ပုံတင်ပါမည်။
 async def gemini_response_handler(client: Client, message: Message):
     """
-    UserBot ၏ မက်ဆေ့ခ်ျများကို စောင့်ကြည့်ပြီး Gemini API မှတဆင့် တုံ့ပြန်သည်
+    Freedom Mode: DM တွင် သူငယ်ချင်းများထံမှ စာသားမက်ဆေ့ခ်ျတိုင်းကို အဖြေပြန်သည်
     """
     
     if not gemini_client:
-        await message.edit("❌ Gemini Client is unavailable. Check API Key.")
+        logging.error("Gemini Client is unavailable. Aborting response.")
         return
 
-    # Extract prompt
-    full_command = message.text.split(maxsplit=1)
-    if len(full_command) < 2:
-        await message.edit(f"❓ **အသုံးပြုပုံ:** `{COMMAND_PREFIX[0]} မေးခွန်း`")
-        return
+    # 1. မက်ဆေ့ခ်ျတစ်ခုလုံးကို prompt အဖြစ် တိုက်ရိုက်ယူပါ (Freedom Logic)
+    prompt = message.text.strip()
+
+    if not prompt:
+        return 
+
+    # 2. Thinking message ကို အရင် Reply ပို့ပါ
+    chat_id = message.chat.id
     
-    prompt = full_command[1].strip()
-
     try:
-        await message.edit("🧠 **Thinking...**")
+        # Thinking message ကို မူရင်းမက်ဆေ့ခ်ျကို Reply ပြန်ပြီး ပို့ခြင်း
+        thinking_msg = await client.send_message(
+            chat_id, 
+            "🧠 **Thinking...**",
+            reply_to_message_id=message.id 
+        )
     except FloodWait as e:
+        logging.warning(f"FloodWait on sending message: waiting {e.value}s")
         await asyncio.sleep(e.value)
-        await message.edit("🧠 **Thinking...**") 
+        thinking_msg = await client.send_message(chat_id, "🧠 **Thinking...**", reply_to_message_id=message.id)
 
-    
-    # Call Gemini API
+
+    # 3. Call Gemini API
     try:
         response = gemini_client.models.generate_content(
             model=MODEL_NAME, 
@@ -77,13 +79,17 @@ async def gemini_response_handler(client: Client, message: Message):
 
         ai_response = response.text
         
+        # 4. အဖြေရလာသောအခါ 'Thinking' message ကို Edit လုပ်ပါ
         final_response = f"**Query:** `{prompt}`\n\n---\n\n{ai_response}"
-        await message.edit(final_response, parse_mode="markdown")
+        
+        await thinking_msg.edit_text(final_response, parse_mode="markdown")
 
     except Exception as e:
         error_message = f"🚫 Gemini API Error: `{type(e).__name__}: {e}`"
         logging.error(error_message)
-        await message.edit(error_message)
+        
+        # Error ကို Thinking message နေရာမှာ ပြင်ပါ
+        await thinking_msg.edit_text(error_message)
 
 
 # -----------------------------------------------
@@ -91,7 +97,7 @@ async def gemini_response_handler(client: Client, message: Message):
 # -----------------------------------------------
 
 async def initialize_clients():
-    """Pyrogram နှင့် Gemini Client များကို စတင်ခြင်း"""
+    """Pyrogram နှင့် Gemini Client များကို စတင်ပြီး Handler မှတ်ပုံတင်ခြင်း"""
     global app_pyrogram, gemini_client
 
     if not API_ID or not API_HASH or not SESSION_STRING:
@@ -109,38 +115,38 @@ async def initialize_clients():
         logging.error(f"❌ Gemini Client initialization failed: {e}")
         return False
 
-    # Pyrogram Client
+    # Pyrogram Client (Name Missing Error ကို ဖြေရှင်းပြီး)
     try:
         app_pyrogram = Client(
-            session_string=SESSION_STRING, 
+            name=SESSION_STRING, # 💡 SESSION_STRING ကို 'name' argument အဖြစ် ပေးလိုက်ပါ
             api_id=API_ID,
             api_hash=API_HASH,
         )
-        logging.info("✅ Pyrogram Client initialized with Session String.")
+        logging.info("✅ Pyrogram Client initialized with Session String (Fix applied).")
     except Exception as e:
         logging.error(f"❌ Pyrogram Client initialization failed: {e}")
         return False
     
-    # 💡 Handler ကို Client Object တွင် မှတ်ပုံတင်ခြင်း (Error ဖြေရှင်းချက်)
+    # 💡 Freedom Filter: စာသား & Private Chat & ကိုယ့်ကိုယ်ကို ပို့တာ မဟုတ်ရ (Auto-Reply Logic)
     if app_pyrogram:
-        message_filters = filters.me & filters.text & filters.command(COMMAND_PREFIX, prefixes="")
+        # filters.me ကို ဖယ်ထုတ်ပြီး သူငယ်ချင်းပို့တဲ့ စာကိုသာ ဖမ်းပါ
+        message_filters = filters.text & filters.private & ~filters.me 
         
         app_pyrogram.add_handler(
             MessageHandler(gemini_response_handler, message_filters)
         )
-        logging.info("✅ Gemini response handler registered.")
+        logging.info("✅ Auto-reply handler registered for all INCOMING DM messages.")
         
     return True
 
 # ===============================================
-# ၃။ FASTAPI WEB SERVICE LOGIC (Startup/Shutdown)
+# ၃။ FASTAPI WEB SERVICE LOGIC (Startup/Shutdown/Health)
 # ===============================================
 
 @app_fastapi.on_event("startup")
 async def startup_event():
     """Web Server စတင်သောအခါ Pyrogram Client ကို Background တွင် စတင်မည်"""
     if await initialize_clients():
-        # Pyrogram Client ကို Background Task အနေနဲ့ Run ခြင်း
         asyncio.create_task(app_pyrogram.start())
         logging.info("⭐ Pyrogram client started in background task.")
     else:
@@ -165,7 +171,6 @@ async def health_check():
 # ===============================================
 
 if __name__ == "__main__":
-    # Local run အတွက် uvicorn ကို သုံးပြီး ခေါ်ဖို့
+    # Local run အတွက်
     PORT = int(os.environ.get("PORT", 8000)) 
-    # module:app_fastapi ပုံစံ မှန်ကန်ကြောင်း သေချာပါစေ (web_userbot:app_fastapi)
     uvicorn.run("web_userbot:app_fastapi", host="0.0.0.0", port=PORT, log_level="info")
