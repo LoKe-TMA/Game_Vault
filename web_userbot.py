@@ -20,6 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ၁။ CONFIGURATION & ENVIRONMENT VARIABLES
 # ===============================================
 
+# Render (သို့မဟုတ် .env) မှ တန်ဖိုးများ ရယူသည်
 API_ID = int(os.environ.get("API_ID", 0)) 
 API_HASH = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "") 
@@ -31,7 +32,7 @@ MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 # ၂။ GLOBAL OBJECTS & INITIALIZATION
 # ===============================================
 
-app_pyrogram = None 
+app_pyrogram: Client = None 
 gemini_client = None 
 app_fastapi = FastAPI(title="Gemini Freedom UserBot") 
 
@@ -48,17 +49,17 @@ async def gemini_response_handler(client: Client, message: Message):
         logging.error("Gemini Client is unavailable. Aborting response.")
         return
 
-    # 1. မက်ဆေ့ခ်ျတစ်ခုလုံးကို prompt အဖြစ် တိုက်ရိုက်ယူပါ (Freedom Logic)
+    # 1. မက်ဆေ့ခ်ျတစ်ခုလုံးကို prompt အဖြစ် တိုက်ရိုက်ယူပါ
     prompt = message.text.strip()
 
     if not prompt:
+        # စာသားမဟုတ်သော မက်ဆေ့ခ်ျများ (e.g. photo, sticker) ကို ကျော်လိုက်ပါ
         return 
 
     # 2. Thinking message ကို အရင် Reply ပို့ပါ
     chat_id = message.chat.id
     
     try:
-        # Thinking message ကို မူရင်းမက်ဆေ့ခ်ျကို Reply ပြန်ပြီး ပို့ခြင်း
         thinking_msg = await client.send_message(
             chat_id, 
             "🧠 **Thinking...**",
@@ -118,7 +119,7 @@ async def initialize_clients():
     # Pyrogram Client (Name Missing Error ကို ဖြေရှင်းပြီး)
     try:
         app_pyrogram = Client(
-            name=SESSION_STRING, # 💡 SESSION_STRING ကို 'name' argument အဖြစ် ပေးလိုက်ပါ
+            name=SESSION_STRING, # SESSION_STRING ကို 'name' argument အဖြစ် ပေးခြင်း
             api_id=API_ID,
             api_hash=API_HASH,
         )
@@ -127,9 +128,9 @@ async def initialize_clients():
         logging.error(f"❌ Pyrogram Client initialization failed: {e}")
         return False
     
-    # 💡 Freedom Filter: စာသား & Private Chat & ကိုယ့်ကိုယ်ကို ပို့တာ မဟုတ်ရ (Auto-Reply Logic)
+    # 💡 Freedom Filter: စာသား & Private Chat & ကိုယ့်ကိုယ်ကို ပို့တာ မဟုတ်ရ
     if app_pyrogram:
-        # filters.me ကို ဖယ်ထုတ်ပြီး သူငယ်ချင်းပို့တဲ့ စာကိုသာ ဖမ်းပါ
+        # Filters: Text Message & Private Chat & Not Me (သူငယ်ချင်းရဲ့ စာသာ)
         message_filters = filters.text & filters.private & ~filters.me 
         
         app_pyrogram.add_handler(
@@ -147,7 +148,8 @@ async def initialize_clients():
 async def startup_event():
     """Web Server စတင်သောအခါ Pyrogram Client ကို Background တွင် စတင်မည်"""
     if await initialize_clients():
-        asyncio.create_task(app_pyrogram.start())
+        # Client ကို Background Task အဖြစ် Run ခြင်း
+        asyncio.create_task(app_pyrogram.start()) 
         logging.info("⭐ Pyrogram client started in background task.")
     else:
         logging.critical("🚨 Bot initialization failed. Check environment variables.")
@@ -155,7 +157,8 @@ async def startup_event():
 @app_fastapi.on_event("shutdown")
 async def shutdown_event():
     """Web Server ရပ်သောအခါ Pyrogram Client ကို ရပ်တန့်မည်"""
-    if app_pyrogram and app_pyrogram.is_running:
+    # 💡 ပြင်ဆင်ချက်: is_running ကို ဖယ်ရှားပြီး app_pyrogram ရှိမရှိသာ စစ်ဆေးခြင်း
+    if app_pyrogram: 
         await app_pyrogram.stop()
         logging.info("🛑 Pyrogram client stopped.")
 
@@ -163,7 +166,8 @@ async def shutdown_event():
 @app_fastapi.get("/health")
 async def health_check():
     """Render Health Check အတွက် တုံ့ပြန်ရန်"""
-    status = "running" if app_pyrogram and app_pyrogram.is_running else "not started"
+    # 💡 ပြင်ဆင်ချက်: app_pyrogram object ရှိနေခြင်းကိုသာ စစ်ဆေးခြင်း
+    status = "running" if app_pyrogram else "not started"
     return {"status": "ok", "bot_status": status, "model": MODEL_NAME}
 
 # ===============================================
@@ -171,6 +175,5 @@ async def health_check():
 # ===============================================
 
 if __name__ == "__main__":
-    # Local run အတွက်
     PORT = int(os.environ.get("PORT", 8000)) 
     uvicorn.run("web_userbot:app_fastapi", host="0.0.0.0", port=PORT, log_level="info")
