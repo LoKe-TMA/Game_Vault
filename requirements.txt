@@ -1,2 +1,4 @@
 pyrogram
 google-genai
+fastapi
+uvicorn
