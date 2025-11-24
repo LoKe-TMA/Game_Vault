@@ -3,8 +3,10 @@ import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait, SessionPasswordNeeded
+from pyrogram.errors import FloodWait
 from google import genai
+from fastapi import FastAPI
+import uvicorn
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,76 +15,72 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ၁။ CONFIGURATION & ENVIRONMENT VARIABLES
 # ===============================================
 
-# Environment Variables မှ တန်ဖိုးများ ရယူပါ
 API_ID = int(os.environ.get("API_ID", 0)) 
 API_HASH = os.environ.get("API_HASH", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "") # Render မှာ အဓိကသုံးမယ့် Session String
+SESSION_STRING = os.environ.get("SESSION_STRING", "") 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") 
 
-# Configuration Options
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 COMMAND_PREFIX = [".ai", "/ai"]
 
-# Validate crucial variables
-if not API_ID or not API_HASH:
-    logging.error("❌ API_ID and API_HASH must be set in Environment Variables.")
-    exit(1)
-
-if not GEMINI_API_KEY:
-    logging.error("❌ GEMINI_API_KEY must be set in Environment Variables.")
-    exit(1)
-
 # ===============================================
-# ၂။ CLIENT INITIALIZATION
+# ၂။ CLIENT INITIALIZATION (Global Objects)
 # ===============================================
 
-# Pyrogram Client
-try:
-    if SESSION_STRING:
-        # Session String ကို သုံးပြီး Client ကို စတင်ခြင်း (Render အတွက် အကောင်းဆုံး)
-        app = Client(
-            session_name=SESSION_STRING, 
+app_pyrogram = None  # Pyrogram Client ကို Global အဖြစ် သတ်မှတ်
+gemini_client = None # Gemini Client ကို Global အဖြစ် သတ်မှတ်
+app_fastapi = FastAPI(title="Gemini UserBot Web Worker") # FastAPI App
+
+# ===============================================
+# ၃။ PYROGRAM HANDLERS
+# ===============================================
+
+async def initialize_clients():
+    """Pyrogram နှင့် Gemini Client များကို စတင်ခြင်း"""
+    global app_pyrogram, gemini_client
+
+    if not API_ID or not API_HASH or not SESSION_STRING:
+        logging.error("❌ Telegram API/Session variables are missing.")
+        return False
+    if not GEMINI_API_KEY:
+        logging.error("❌ GEMINI_API_KEY is missing.")
+        return False
+
+    # Gemini Client
+    try:
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        logging.info("✅ Gemini Client successfully initialized.")
+    except Exception as e:
+        logging.error(f"❌ Gemini Client initialization failed: {e}")
+        return False
+
+    # Pyrogram Client
+    try:
+        app_pyrogram = Client(
+            session_string=SESSION_STRING, 
             api_id=API_ID,
             api_hash=API_HASH,
+            # Handler များကို မှတ်ပုံတင်ရန်
+            plugins={"root": "web_userbot"} 
         )
-        logging.info("✅ Pyrogram Client initialized using SESSION_STRING.")
-    else:
-        # Local run သို့မဟုတ် ပထမဆုံးအကြိမ် login အတွက် session name ကိုသုံးခြင်း
-        app = Client(
-            "gemini_userbot_session", # Session file နာမည်
-            api_id=API_ID,
-            api_hash=API_HASH
-        )
-        logging.warning("⚠️ SESSION_STRING is missing. Client will try to log in interactively (might fail on Render).")
+        logging.info("✅ Pyrogram Client initialized with Session String.")
+    except Exception as e:
+        logging.error(f"❌ Pyrogram Client initialization failed: {e}")
+        return False
+    
+    return True
 
-except Exception as e:
-    logging.error(f"❌ Pyrogram Client initialization failed: {e}")
-    exit(1)
-
-# Gemini Client
-try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    logging.info(f"✅ Gemini Client successfully initialized with model: {MODEL_NAME}.")
-except Exception as e:
-    logging.error(f"❌ Gemini Client initialization failed: {e}")
-    gemini_client = None
-
-
-# ===============================================
-# ၃။ MESSAGE HANDLER
-# ===============================================
-
-@app.on_message(filters.me & filters.text & filters.command(COMMAND_PREFIX, prefixes=""))
+@app_pyrogram.on_message(filters.me & filters.text & filters.command(COMMAND_PREFIX, prefixes=""))
 async def gemini_response_handler(client: Client, message: Message):
-    """
-    UserBot ၏ ကိုယ်ပိုင်မက်ဆေ့ခ်ျများကို စောင့်ကြည့်ပြီး Gemini API မှတဆင့် တုံ့ပြန်သည်။
-    """
+    """Gemini API ကို အသုံးပြုပြီး မက်ဆေ့ခ်ျများကို တုံ့ပြန်သည်"""
     
     if not gemini_client:
-        await message.edit("❌ Gemini Client စတင်၍ မရပါ။ API Key ကို စစ်ဆေးပါ။")
+        await message.edit("❌ Gemini Client is unavailable.")
         return
 
     # Extract prompt
+    # ... (ယခင်ကအတိုင်း)
+    
     full_command = message.text.split(maxsplit=1)
     if len(full_command) < 2:
         await message.edit(f"❓ **အသုံးပြုပုံ:** `{COMMAND_PREFIX[0]} မေးခွန်း`")
@@ -90,12 +88,10 @@ async def gemini_response_handler(client: Client, message: Message):
     
     prompt = full_command[1].strip()
 
-    # Inform user (edit the original message)
     try:
         await message.edit("🧠 **Thinking...**")
-    except FloodWait as e:
-        logging.warning(f"FloodWait on edit: Retrying after {e.value} seconds.")
-        await asyncio.sleep(e.value)
+    except FloodWait:
+        await asyncio.sleep(5)
         await message.edit("🧠 **Thinking...**") 
 
     
@@ -107,31 +103,54 @@ async def gemini_response_handler(client: Client, message: Message):
         )
 
         ai_response = response.text
-        
-        # Final response formatting
         final_response = f"**Query:** `{prompt}`\n\n---\n\n{ai_response}"
-
-        # Send final response
         await message.edit(final_response, parse_mode="markdown")
 
     except Exception as e:
-        error_message = f"🚫 Gemini API ခေါ်ဆိုမှုတွင် အမှားဖြစ်ပွား: `{type(e).__name__}: {e}`"
+        error_message = f"🚫 Gemini API Error: `{e}`"
         logging.error(error_message)
-        
-        # Edit the message back to show the error
-        try:
-            await message.edit(error_message)
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value)
-            await message.edit(error_message)
+        await message.edit(error_message)
 
 
 # ===============================================
-# ၄။ STARTUP
+# ၄။ FASTAPI WEB SERVICE LOGIC
 # ===============================================
 
+@app_fastapi.on_event("startup")
+async def startup_event():
+    """Web Server စတင်သောအခါ Pyrogram Client ကို စတင်မည်"""
+    global app_pyrogram
+    
+    success = await initialize_clients()
+    if success:
+        # Pyrogram Client ကို Background မှာ Run စေရန်
+        asyncio.create_task(app_pyrogram.start())
+        logging.info("⭐ Pyrogram client started in background.")
+    else:
+        logging.critical("🚨 Bot cannot start due to initialization failure.")
+        # Failed ဆိုရင်တော့ Bot က အလုပ်မလုပ်တော့ပါဘူး
+
+@app_fastapi.on_event("shutdown")
+async def shutdown_event():
+    """Web Server ရပ်သောအခါ Pyrogram Client ကို ရပ်တန့်မည်"""
+    if app_pyrogram:
+        await app_pyrogram.stop()
+        logging.info("🛑 Pyrogram client stopped.")
+
+@app_fastapi.get("/")
+@app_fastapi.get("/health")
+async def health_check():
+    """Render Health Check အတွက် တုံ့ပြန်ရန်"""
+    status = "running" if app_pyrogram and app_pyrogram.is_running else "not started"
+    return {"status": "ok", "bot_status": status, "model": MODEL_NAME}
+
+# ===============================================
+# ၅။ ENTRY POINT FOR RENDER
+# ===============================================
+
+# Local မှာ Run ရင် uvicorn ကို သုံးပြီး ခေါ်ဖို့အတွက်
 if __name__ == "__main__":
-    logging.info(f"🚀 Gemini UserBot ({MODEL_NAME}) is starting...")
-    app.run()
-    logging.info("👋 UserBot stopped.")
-  
+    # Render မှာ Environment Variable 'PORT' ကို Auto ပေးတဲ့အတွက် 
+    # local run မှာ 8000 ကို သုံးထားသည်
+    PORT = int(os.environ.get("PORT", 8000)) 
+    uvicorn.run("web_userbot:app_fastapi", host="0.0.0.0", port=PORT, log_level="info")
