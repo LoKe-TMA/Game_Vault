@@ -2,3 +2,4 @@ pyrogram
 google-genai
 fastapi
 uvicorn
+python-dotenv
